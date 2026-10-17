@@ -1,0 +1,136 @@
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+
+st.set_page_config(
+    page_title="Natural Gas Dashboard (Henry Hub)", layout="wide"
+)
+
+st.title("🔥 Henry Hub Natural Gas Tracker")
+st.markdown("Интерактивно табло за проследяване на цените и техническите индикатори.")
+
+# Странична лента
+st.sidebar.header("Параметри на анализа")
+ticker_symbol = "NG=F"
+
+period_options = {
+    "1 месец": "1mo",
+    "3 месеца": "3mo",
+    "6 месеца": "6mo",
+    "1 година": "1y",
+    "2 години": "2y",
+    "5 години": "5y",
+}
+selected_period_label = st.sidebar.selectbox(
+    "Изберете период", list(period_options.keys()), index=2
+)
+selected_period = period_options[selected_period_label]
+
+interval_options = {"Дневен (1d)": "1d", "Часови (1h)": "1h"}
+selected_interval_label = st.sidebar.selectbox(
+    "Интервал на свещите", list(interval_options.keys()), index=0
+)
+selected_interval = interval_options[selected_interval_label]
+
+
+@st.cache_data(ttl=600)
+def load_data(ticker, period, interval):
+    df = yf.download(ticker, period=period, interval=interval)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
+with st.spinner("Зареждане на пазарни данни..."):
+    df = load_data(ticker_symbol, selected_period, selected_interval)
+
+if df.empty:
+    st.error("Няма намерени данни за избрания период или символ.")
+else:
+    df["EMA_20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA_200"] = df["Close"].ewm(span=200, adjust=False).mean()
+
+    df["BB_Middle"] = df["Close"].rolling(window=20).mean()
+    df["BB_Std"] = df["Close"].rolling(window=20).std()
+    df["BB_Upper"] = df["BB_Middle"] + (df["BB_Std"] * 2)
+    df["BB_Lower"] = df["BB_Middle"] - (df["BB_Std"] * 2)
+
+    latest_close = df["Close"].iloc[-1]
+    prev_close = df["Close"].iloc[-2]
+    price_change = latest_close - prev_close
+    percent_change = (price_change / prev_close) * 100
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric(
+        "Последна цена (Henry Hub)",
+        f"${latest_close:.3f}",
+        f"{price_change:+.3f} ({percent_change:+.2f}%)",
+    )
+    col2.metric("EMA 20", f"${df['EMA_20'].iloc[-1]:.3f}")
+    col3.metric("EMA 50", f"${df['EMA_50'].iloc[-1]:.3f}")
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name="OHLC",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=df["EMA_20"],
+            line=dict(color="orange", width=1.5),
+            name="EMA 20",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=df["EMA_50"],
+            line=dict(color="blue", width=1.5),
+            name="EMA 50",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=df["EMA_200"],
+            line=dict(color="purple", width=1.5),
+            name="EMA 200",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=df["BB_Upper"],
+            line=dict(color="gray", width=1, dash="dash"),
+            name="BB Upper",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=df["BB_Lower"],
+            line=dict(color="gray", width=1, dash="dash"),
+            name="BB Lower",
+            fill="tonexty",
+            fillcolor="rgba(150,150,150,0.1)",
+        )
+    )
+
+    fig.update_layout(
+        title=f"Технически анализ за {ticker_symbol}",
+        yaxis_title="Цена (USD / MMBtu)",
+        xaxis_rangeslider_visible=False,
+        height=650,
+        template="plotly_dark",
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
